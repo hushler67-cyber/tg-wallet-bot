@@ -887,9 +887,7 @@ bot.action('buy_start', async (ctx) => {
   ctx.session.awaiting = null;
   ctx.session.buy = {};
   await ctx.reply(
-    '🟢 *Buy*
-
-Select the chain to trade on:',
+    '🟢 *Buy*\n\nSelect the chain to trade on:',
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
