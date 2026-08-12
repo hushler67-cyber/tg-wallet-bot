@@ -187,22 +187,168 @@ bot.hears('📈 Copytrade', async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets. 🙂');
 
-  ctx.session.awaiting = 'copytrade_wallet';
-  await ctx.reply('📈 *Copytrade*\n\nSend the wallet address you\'d like to copy trade (ETH, BSC, or SOL).', { parse_mode: 'Markdown' });
+  const targets = db.getCopytradeTargets(ctx.from.id);
+  const active = db.isCopytradeActive(ctx.from.id);
+  const positions = db.getPositions(ctx.from.id, true);
+
+  if (!targets.length) {
+    ctx.session.awaiting = 'copytrade_wallet';
+    await ctx.reply(
+      '📈 *Copytrade*\n\nNo wallets yet.\nSend a wallet address to copy (ETH, BSC, or SOL).',
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  let text =
+    '📈 *Copytrade*\n\n' +
+    'Status: *' + (active ? 'ACTIVE ✅' : 'STOPPED ⏹') + '*\n' +
+    'Tracking *' + targets.length + '* wallet(s):\n';
+  for (const a of targets.slice(0, 10)) {
+    text += '• `' + a + '`\n';
+  }
+  if (targets.length > 10) text += '…and ' + (targets.length - 10) + ' more\n';
+
+  text += '\n*Active trades (open positions):* ' + positions.length + '\n';
+  if (positions.length) {
+    for (const p of positions.slice(0, 8)) {
+      text += '• ' + (p.token_symbol || 'TOKEN') + ' $' + Number(p.amount_usd).toFixed(2) + ' (' + String(p.chain).toUpperCase() + ')\n';
+    }
+  } else {
+    text += '_None yet — fills will appear here and in Wallet._\n';
+  }
+
+  await ctx.reply(text, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('➕ Add new wallet address', 'copytrade_add_more')],
+      [
+        Markup.button.callback('▶️ Start copytrade', 'copytrade_start_all'),
+        Markup.button.callback('⏹ Stop copytrade', 'copytrade_stop_all'),
+      ],
+      [Markup.button.callback('📋 Active trades', 'copytrade_active_trades')],
+      [Markup.button.callback('👛 Open Wallet', 'copytrade_open_wallet')],
+      [Markup.button.callback('🔙 Back', 'copytrade_back')],
+    ]),
+  });
 });
+
+bot.action('copytrade_active_trades', async (ctx) => {
+  await ctx.answerCbQuery();
+  const positions = db.getPositions(ctx.from.id, true);
+  if (!positions.length) {
+    return ctx.reply('No active trades. When copytrade fills a position, it will show here.');
+  }
+  await ctx.reply('Loading live prices...');
+  try {
+    const enriched = await enrichPositions(positions);
+    let text = '📋 *Active copytrade positions*\n\n';
+    const rows = [];
+    for (const p of enriched) {
+      const sign = p.pnl >= 0 ? '+' : '';
+      text +=
+        '*' + p.symbol + '* (' + String(p.chain).toUpperCase() + ')\n' +
+        'Value: $' + p.currentValue.toFixed(2) +
+        ' | PnL: ' + sign + '$' + p.pnl.toFixed(2) + ' (' + sign + p.pnlPct.toFixed(1) + '%)\n\n';
+      rows.push([
+        Markup.button.callback('🔴 Sell ' + String(p.symbol).slice(0, 10), 'pos_sell:' + p.id),
+      ]);
+    }
+    rows.push([Markup.button.callback('🔙 Back', 'copytrade_back')]);
+    await ctx.reply(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) });
+  } catch (err) {
+    await ctx.reply('Failed to load trades: ' + (err.message || String(err)));
+  }
+});
+
+bot.action('copytrade_open_wallet', async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start first.');
+  const overview = await formatWalletOverview(user);
+  await ctx.reply(overview.text, {
+    parse_mode: 'Markdown',
+    ...walletKeyboard(overview.positions),
+  });
+});
+
 
 // ---- Text handler: only acts when we're expecting an address/key, otherwise ignores ----
 bot.on('text', async (ctx, next) => {
   if (ctx.session?.awaiting === 'copytrade_wallet') {
     const address = ctx.message.text.trim();
+    if (!address || address.length < 10) {
+      await ctx.reply('That does not look like a valid address. Send it again.');
+      return;
+    }
+    ctx.session.copytrade = { address };
+    ctx.session.awaiting = null;
+    await ctx.reply(
+      'Wallet: `' + address + '`\n\nSelect the *chain* for this copytrade allocation:',
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('ETH', 'ct_chain:eth'),
+            Markup.button.callback('BSC (BNB)', 'ct_chain:bsc'),
+            Markup.button.callback('SOL', 'ct_chain:sol'),
+          ],
+          [Markup.button.callback('❌ Cancel', 'copytrade_back')],
+        ]),
+      }
+    );
+    return;
+  }
+
+  if (ctx.session?.awaiting === 'copytrade_amount') {
+    const amount = Number(String(ctx.message.text).trim().replace(/[$,]/g));
+    const ct = ctx.session.copytrade || {};
     ctx.session.awaiting = null;
 
-    db.addCopytradeTarget(ctx.from.id, address);
+    if (!ct.address || !ct.chain) {
+      ctx.session.copytrade = null;
+      await ctx.reply('Session expired. Open Copytrade and try again.', mainMenu);
+      return;
+    }
+    if (Number.isNaN(amount) || amount <= 0) {
+      ctx.session.awaiting = 'copytrade_amount';
+      await ctx.reply('Enter a valid $ amount greater than 0.');
+      return;
+    }
+
+    const balances = db.getDummyBalances(ctx.from.id) || { eth: 0, bsc: 0, sol: 0 };
+    const available = Number(balances[ct.chain] ?? 0);
+    const label = ct.chain === 'bsc' ? 'BNB' : ct.chain.toUpperCase();
+
+    if (amount > available) {
+      ctx.session.copytrade = null;
+      await ctx.reply(
+        'Insufficient *' + label + '* balance.\n\n' +
+          'Needed: *$' + amount.toFixed(2) + '*\n' +
+          'Available: *$' + available.toFixed(2) + '*\n\n' +
+          'Please *deposit* more to your ' + label + ' balance, then try Copytrade again.',
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('👛 Wallet', 'copytrade_open_wallet')],
+            [Markup.button.callback('🔙 Menu', 'copytrade_back')],
+          ]),
+        }
+      );
+      return;
+    }
+
+    db.addCopytradeTarget(ctx.from.id, ct.address);
     const targets = db.getCopytradeTargets(ctx.from.id);
+    ctx.session.copytrade = null;
 
     await ctx.reply(
-      `✅ Wallet added: \`${address}\`\n\n` +
-      `📋 Currently tracking ${targets.length} wallet${targets.length === 1 ? '' : 's'} for copytrade.`,
+      '✅ Copytrade wallet added\n\n' +
+        'Address: `' + ct.address + '`\n' +
+        'Chain: *' + label + '*\n' +
+        'Allocation: *$' + amount.toFixed(2) + '*\n' +
+        'Available ' + label + ': $' + available.toFixed(2) + '\n\n' +
+        'Tracking ' + targets.length + ' wallet(s). Use Start to activate copytrade.',
       { parse_mode: 'Markdown', ...copytradeControls }
     );
     return;
@@ -490,6 +636,25 @@ bot.on('text', async (ctx, next) => {
   }
 
   return next();
+});
+
+
+bot.action(/^ct_chain:(eth|bsc|sol)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const chain = ctx.match[1];
+  if (!ctx.session.copytrade || !ctx.session.copytrade.address) {
+    return ctx.reply('Session expired. Open Copytrade and send an address again.');
+  }
+  ctx.session.copytrade.chain = chain;
+  ctx.session.awaiting = 'copytrade_amount';
+  const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+  const balances = db.getDummyBalances(ctx.from.id) || { eth: 0, bsc: 0, sol: 0 };
+  const available = Number(balances[chain] ?? 0);
+  await ctx.reply(
+    'How much in $ to allocate on *' + label + '* for this copytrade?\n\n' +
+      'Available: *$' + available.toFixed(2) + '*',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.action('copytrade_add_more', async (ctx) => {
