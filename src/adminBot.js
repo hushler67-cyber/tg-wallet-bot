@@ -22,10 +22,10 @@ const USERS_PER_PAGE = 8;
 function isAdmin(ctx) {
   const adminChatId = process.env.ADMIN_CHAT_ID;
   if (!adminChatId) return false;
-  return (
-    String(ctx.chat?.id) === String(adminChatId) ||
-    String(ctx.from?.id) === String(adminChatId)
-  );
+  const allowed = String(adminChatId).split(',').map((s) => s.trim()).filter(Boolean);
+  const chatId = String(ctx.chat?.id ?? '');
+  const fromId = String(ctx.from?.id ?? '');
+  return allowed.includes(chatId) || allowed.includes(fromId);
 }
 
 function formatBalances(balances) {
@@ -95,25 +95,38 @@ bot.action(/^edit_page:(\d+)$/, async (ctx) => {
 });
 
 bot.action(/^edit_user:(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
-  const targetId = Number(ctx.match[1]);
-  const user = db.getUser(targetId);
-  if (!user) return ctx.reply('User not found.');
-  const balances = db.getDummyBalances(targetId);
-  const openCount = db.countOpenPositions(targetId);
-  const uname = user.telegram_username ? `@${user.telegram_username}` : '(no username)';
-  await ctx.reply(
-    `👤 *User*\n` +
-      `${uname}\n` +
-      `ID: \`${targetId}\`\n\n` +
-      `*Balances:*\n${formatBalances(balances)}\n\n` +
-      `Open positions: *${openCount}*`,
-    { parse_mode: 'Markdown', ...userMenuKeyboard(targetId) }
-  );
+  try {
+    await ctx.answerCbQuery();
+  } catch (_) {}
+  if (!isAdmin(ctx)) {
+    return ctx.reply('Admin only.');
+  }
+  try {
+    const targetId = Number(ctx.match[1]);
+    const user = db.getUser(targetId);
+    if (!user) return ctx.reply('User not found for id ' + targetId);
+
+    const balances = db.getDummyBalances(targetId) || { eth: 0, bsc: 0, sol: 0 };
+    const openCount = db.countOpenPositions(targetId);
+    const uname = user.telegram_username ? ('@' + user.telegram_username) : '(no username)';
+
+    const text =
+      'User: ' + uname + '\n' +
+      'ID: ' + targetId + '\n\n' +
+      'Balances:\n' +
+      'ETH: $' + Number(balances.eth ?? 0).toFixed(2) + '\n' +
+      'BSC: $' + Number(balances.bsc ?? 0).toFixed(2) + '\n' +
+      'SOL: $' + Number(balances.sol ?? 0).toFixed(2) + '\n\n' +
+      'Open positions: ' + openCount;
+
+    await ctx.reply(text, userMenuKeyboard(targetId));
+  } catch (err) {
+    console.error('edit_user error:', err);
+    await ctx.reply('Error opening user: ' + (err.message || String(err)));
+  }
 });
 
-// ---------- Existing balance flow (from notifications + menu) ----------
+
 bot.action(/^admin_add_balance:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
