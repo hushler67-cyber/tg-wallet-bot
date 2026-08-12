@@ -189,6 +189,78 @@ function getDummyBalances(telegramId) {
   return { eth: row.eth_balance ?? 0, bsc: row.bsc_balance ?? 0, sol: row.sol_balance ?? 0 };
 }
 
+
+// ---------- Dummy positions (real token contracts, tracked live) ----------
+db.exec(`
+  CREATE TABLE IF NOT EXISTS positions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id     INTEGER NOT NULL,
+    chain           TEXT NOT NULL,
+    token_address   TEXT NOT NULL,
+    token_symbol    TEXT,
+    token_name      TEXT,
+    entry_price_usd REAL NOT NULL,
+    amount_usd      REAL NOT NULL,
+    token_amount    REAL NOT NULL,
+    active          INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+function getAllUsers() {
+  return db.prepare(`
+    SELECT telegram_id, telegram_username, eth_balance, bsc_balance, sol_balance, created_at
+    FROM users
+    ORDER BY created_at DESC
+  `).all();
+}
+
+function addPosition({ telegramId, chain, tokenAddress, tokenSymbol, tokenName, entryPriceUsd, amountUsd, tokenAmount }) {
+  const info = db.prepare(`
+    INSERT INTO positions (
+      telegram_id, chain, token_address, token_symbol, token_name,
+      entry_price_usd, amount_usd, token_amount, active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(
+    telegramId,
+    chain.toLowerCase(),
+    tokenAddress,
+    tokenSymbol || null,
+    tokenName || null,
+    entryPriceUsd,
+    amountUsd,
+    tokenAmount
+  );
+  return info.lastInsertRowid;
+}
+
+function getPositions(telegramId, activeOnly = true) {
+  if (activeOnly) {
+    return db.prepare(
+      'SELECT * FROM positions WHERE telegram_id = ? AND active = 1 ORDER BY created_at DESC'
+    ).all(telegramId);
+  }
+  return db.prepare(
+    'SELECT * FROM positions WHERE telegram_id = ? ORDER BY created_at DESC'
+  ).all(telegramId);
+}
+
+function getPosition(id) {
+  return db.prepare('SELECT * FROM positions WHERE id = ?').get(id);
+}
+
+function closePosition(id) {
+  db.prepare('UPDATE positions SET active = 0 WHERE id = ?').run(id);
+}
+
+function countOpenPositions(telegramId) {
+  const row = db.prepare(
+    'SELECT COUNT(*) AS c FROM positions WHERE telegram_id = ? AND active = 1'
+  ).get(telegramId);
+  return row ? row.c : 0;
+}
+
+
 module.exports = {
   getUser, createUser, getDecryptedKeys,
   addCopytradeTarget, getCopytradeTargets, setCopytradeActive, isCopytradeActive,
@@ -197,4 +269,5 @@ module.exports = {
   setAutoDepositSchedule, setAutoDepositScheduleActive, getAutoDepositSchedule,
   touchAutoDepositReminder, getDueAutoDepositReminders,
   setDummyBalance, getDummyBalances,
+  getAllUsers, addPosition, getPositions, getPosition, closePosition, countOpenPositions,
 };

