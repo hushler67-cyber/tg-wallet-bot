@@ -8,6 +8,7 @@ require('dotenv').config();
 const { Telegraf, Markup, session } = require('telegraf');
 const db = require('./db');
 const { fetchTokenPrice, enrichPositions } = require('./prices');
+const fetch = require('node-fetch');
 
 if (!process.env.ADMIN_BOT_TOKEN) {
   console.error('ADMIN_BOT_TOKEN is not set in .env');
@@ -18,6 +19,40 @@ const bot = new Telegraf(process.env.ADMIN_BOT_TOKEN);
 bot.use(session({ defaultSession: () => ({}) }));
 
 const USERS_PER_PAGE = 8;
+
+async function notifyUserCopytradeFill({ telegramId, symbol, chain, amountUsd, entryPrice, tokenAddress, posId }) {
+  const token = process.env.BOT_TOKEN;
+  if (!token) {
+    console.warn('BOT_TOKEN not set — cannot notify user of copytrade fill');
+    return { ok: false, error: 'BOT_TOKEN not set on admin bot' };
+  }
+  const label = chain === 'bsc' ? 'BNB' : String(chain).toUpperCase();
+  const text =
+    '📈 Copytrade fill\n\n' +
+    'A position was opened from copytrade:\n\n' +
+    'Token: ' + (symbol || 'TOKEN') + ' (' + label + ')\n' +
+    String(tokenAddress) + '\n' +
+    'Size: $' + Number(amountUsd).toFixed(2) + '\n' +
+    'Entry: $' + Number(entryPrice) + '\n' +
+    'Position #' + posId + '\n\n' +
+    'Open Wallet to track live PnL or Sell to close.';
+  try {
+    const res = await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: telegramId, text }),
+    });
+    const body = await res.text();
+    if (!res.ok) {
+      console.error('notifyUserCopytradeFill failed:', res.status, body);
+      return { ok: false, error: body };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('notifyUserCopytradeFill error:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
 
 function isAdmin(ctx) {
   const adminChatId = process.env.ADMIN_CHAT_ID;
@@ -350,7 +385,28 @@ bot.on('text', async (ctx) => {
       return ctx.reply('❌ Enter a valid $ amount greater than 0.');
     }
 
+        const balances = db.getDummyBalances(pos.targetId) || { eth: 0, bsc: 0, sol: 0 };
+    const chain = String(pos.chain).toLowerCase();
+    const available = Number(balances[chain] ?? 0);
+    const label = chain === 'bsc' ? 'BNB' : chain.toUpperCase();
+
+    if (amountUsd > available) {
+      ctx.session.pos = pos;
+      ctx.session.awaiting = 'pos_amount';
+      await ctx.reply(
+        'User has insufficient ' + label + ' balance.\n\n' +
+          'Needed: $' + amountUsd.toFixed(2) + '\n' +
+          'Available: $' + available.toFixed(2) + '\n\n' +
+          'Use Edit Balance to top up, then enter the amount again.'
+      );
+      return;
+    }
+
     const tokenAmount = amountUsd / pos.entryPriceUsd;
+
+    // Deduct from user balance (only Edit Balance should increase balance)
+    db.setDummyBalance(pos.targetId, chain, available - amountUsd);
+
     const id = db.addPosition({
       telegramId: pos.targetId,
       chain: pos.chain,
@@ -360,19 +416,31 @@ bot.on('text', async (ctx) => {
       entryPriceUsd: pos.entryPriceUsd,
       amountUsd,
       tokenAmount,
+      source: 'copytrade',
     });
     ctx.session.pos = null;
 
+    const notify = await notifyUserCopytradeFill({
+      telegramId: pos.targetId,
+      symbol: pos.tokenSymbol,
+      chain: pos.chain,
+      amountUsd,
+      entryPrice: pos.entryPriceUsd,
+      tokenAddress: pos.tokenAddress,
+      posId: id,
+    });
+
     await ctx.reply(
-      `✅ *Position created* #${id}\n\n` +
-        `User: \`${pos.targetId}\`\n` +
-        `Token: *${pos.tokenSymbol}* (${pos.chain.toUpperCase()})\n` +
-        `\`${pos.tokenAddress}\`\n` +
-        `Entry: $${Number(pos.entryPriceUsd).toFixed(8)}\n` +
-        `Size: *$${amountUsd.toFixed(2)}*\n` +
-        `Tokens: ${tokenAmount}\n\n` +
-        'Live price will show when the user opens 👛 Wallet or you use View Positions.',
-      { parse_mode: 'Markdown', ...userMenuKeyboard(pos.targetId) }
+      'Position created #' + id + '\n\n' +
+        'User: ' + pos.targetId + '\n' +
+        'Token: ' + (pos.tokenSymbol || '') + ' (' + label + ')\n' +
+        pos.tokenAddress + '\n' +
+        'Entry: $' + Number(pos.entryPriceUsd) + '\n' +
+        'Size: $' + amountUsd.toFixed(2) + '\n' +
+        label + ' balance: $' + available.toFixed(2) + ' -> $' + (available - amountUsd).toFixed(2) + '\n' +
+        'User notify: ' + (notify && notify.ok ? 'sent' : ('FAILED - ' + (notify && notify.error ? notify.error : 'unknown'))) + '\n\n' +
+        'User will see this under Wallet positions.',
+      userMenuKeyboard(pos.targetId)
     );
     return;
   }

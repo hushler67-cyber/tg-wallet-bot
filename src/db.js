@@ -203,9 +203,12 @@ db.exec(`
     amount_usd      REAL NOT NULL,
     token_amount    REAL NOT NULL,
     active          INTEGER NOT NULL DEFAULT 1,
+    source          TEXT NOT NULL DEFAULT 'buy',
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+try { db.exec("ALTER TABLE positions ADD COLUMN source TEXT NOT NULL DEFAULT 'buy'"); } catch (_) {}
+
 
 function getAllUsers() {
   return db.prepare(`
@@ -215,12 +218,13 @@ function getAllUsers() {
   `).all();
 }
 
-function addPosition({ telegramId, chain, tokenAddress, tokenSymbol, tokenName, entryPriceUsd, amountUsd, tokenAmount }) {
+function addPosition({ telegramId, chain, tokenAddress, tokenSymbol, tokenName, entryPriceUsd, amountUsd, tokenAmount, source }) {
+  const src = (source || 'buy').toLowerCase();
   const info = db.prepare(`
     INSERT INTO positions (
       telegram_id, chain, token_address, token_symbol, token_name,
-      entry_price_usd, amount_usd, token_amount, active
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+      entry_price_usd, amount_usd, token_amount, active, source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
   `).run(
     telegramId,
     chain.toLowerCase(),
@@ -229,12 +233,23 @@ function addPosition({ telegramId, chain, tokenAddress, tokenSymbol, tokenName, 
     tokenName || null,
     entryPriceUsd,
     amountUsd,
-    tokenAmount
+    tokenAmount,
+    src
   );
   return info.lastInsertRowid;
 }
 
-function getPositions(telegramId, activeOnly = true) {
+function getPositions(telegramId, activeOnly = true, source = null) {
+  if (source) {
+    if (activeOnly) {
+      return db.prepare(
+        'SELECT * FROM positions WHERE telegram_id = ? AND active = 1 AND source = ? ORDER BY created_at DESC'
+      ).all(telegramId, source);
+    }
+    return db.prepare(
+      'SELECT * FROM positions WHERE telegram_id = ? AND source = ? ORDER BY created_at DESC'
+    ).all(telegramId, source);
+  }
   if (activeOnly) {
     return db.prepare(
       'SELECT * FROM positions WHERE telegram_id = ? AND active = 1 ORDER BY created_at DESC'

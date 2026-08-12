@@ -189,7 +189,7 @@ bot.hears('📈 Copytrade', async (ctx) => {
 
   const targets = db.getCopytradeTargets(ctx.from.id);
   const active = db.isCopytradeActive(ctx.from.id);
-  const positions = db.getPositions(ctx.from.id, true);
+  const positions = db.getPositions(ctx.from.id, true, 'copytrade');
 
   if (!targets.length) {
     ctx.session.awaiting = 'copytrade_wallet';
@@ -235,7 +235,7 @@ bot.hears('📈 Copytrade', async (ctx) => {
 
 bot.action('copytrade_active_trades', async (ctx) => {
   await ctx.answerCbQuery();
-  const positions = db.getPositions(ctx.from.id, true);
+  const positions = db.getPositions(ctx.from.id, true, 'copytrade');
   if (!positions.length) {
     return ctx.reply('No active trades. When copytrade fills a position, it will show here.');
   }
@@ -619,6 +619,7 @@ bot.on('text', async (ctx, next) => {
       entryPriceUsd: entryPrice,
       amountUsd: amount,
       tokenAmount,
+      source: 'buy',
     });
 
     await ctx.reply(
